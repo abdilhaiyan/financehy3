@@ -1,182 +1,363 @@
 // ---------- State ----------
-let transactions = JSON.parse(localStorage.getItem('transactions')) || [];
-let monthlyBudget = parseFloat(localStorage.getItem('monthlyBudget')) || 0;
-let selectedMonth = 'all'; // 'all' or 'YYYY-MM'
+const store = {
+    accounts: JSON.parse(localStorage.getItem('accounts')) || [{ id: 1, name: 'Main', color: '#4f46e5' }],
+    transactions: JSON.parse(localStorage.getItem('transactions')) || [],
+    recurring: JSON.parse(localStorage.getItem('recurring')) || [],
+    budget: parseFloat(localStorage.getItem('monthlyBudget')) || 0,
+};
+let selectedMonth = 'all';
+let selectedAccount = 'all';
 let expenseChart = null;
 
 // ---------- DOM ----------
-const form = document.getElementById('transaction-form');
-const transactionList = document.getElementById('transaction-list');
-const balanceEl = document.getElementById('balance');
-const incomeEl = document.getElementById('total-income');
-const expenseEl = document.getElementById('total-expense');
-const clearBtn = document.getElementById('clear-all');
-const monthFilter = document.getElementById('month-filter');
-const budgetInput = document.getElementById('budget-input');
-const exportBtn = document.getElementById('export-csv');
-const importBtn = document.getElementById('import-csv-btn');
-const importFile = document.getElementById('import-csv');
-const budgetStatus = document.getElementById('budget-status');
-const budgetFill = document.getElementById('budget-fill');
-const budgetMsg = document.getElementById('budget-msg');
-const netLabel = document.getElementById('net-label');
-const incomeLabel = document.getElementById('income-label');
-const expenseLabel = document.getElementById('expense-label');
+const $ = id => document.getElementById(id);
+const accountFilter = $('account-filter');
+const monthFilter = $('month-filter');
+const budgetInput = $('budget-input');
+const themeBtn = $('theme-toggle');
 
 // ---------- Init ----------
-budgetInput.value = monthlyBudget > 0 ? monthlyBudget : '';
-document.getElementById('date').valueAsDate = new Date();
-populateMonthFilter();
+budgetInput.value = store.budget > 0 ? store.budget : '';
+$('date').valueAsDate = new Date();
+initTheme();
+populateAccounts();
+populateMonths();
 renderAll();
 
 // ---------- Persistence ----------
-function saveData() {
-    localStorage.setItem('transactions', JSON.stringify(transactions));
-    localStorage.setItem('monthlyBudget', monthlyBudget);
+function save() {
+    localStorage.setItem('accounts', JSON.stringify(store.accounts));
+    localStorage.setItem('transactions', JSON.stringify(store.transactions));
+    localStorage.setItem('recurring', JSON.stringify(store.recurring));
+    localStorage.setItem('monthlyBudget', store.budget);
 }
 
-// ---------- Helpers ----------
-function getMonthKey(dateStr) {
-    return dateStr.slice(0, 7); // 'YYYY-MM'
+// ---------- Theme ----------
+function initTheme() {
+    const saved = localStorage.getItem('theme');
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const theme = saved || (prefersDark ? 'dark' : 'light');
+    setTheme(theme);
 }
-
-function getFilteredTransactions() {
-    if (selectedMonth === 'all') return transactions;
-    return transactions.filter(t => getMonthKey(t.date) === selectedMonth);
+function setTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    localStorage.setItem('theme', t);
+    themeBtn.textContent = t === 'dark' ? '☀️' : '🌙';
 }
+themeBtn.addEventListener('click', () =>
+    setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark')
+);
 
-function formatMonthLabel(yyyymm) {
-    const [y, m] = yyyymm.split('-');
-    return new Date(y, parseInt(m) - 1, 1)
-        .toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
+// ---------- Accounts ----------
+function populateAccounts() {
+    accountFilter.innerHTML = '<option value="all">All Accounts</option>';
+    store.accounts.forEach(a => {
+        const o = document.createElement('option');
+        o.value = a.id;
+        o.textContent = a.name;
+        accountFilter.appendChild(o);
+    });
+    accountFilter.value = selectedAccount;
 }
+$('add-account').addEventListener('click', () => {
+    const name = prompt('Account name:');
+    if (!name) return;
+    const colors = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+    store.accounts.push({
+        id: Date.now(),
+        name,
+        color: colors[store.accounts.length % colors.length]
+    });
+    save();
+    populateAccounts();
+});
+accountFilter.addEventListener('change', () => {
+    selectedAccount = accountFilter.value;
+    renderAll();
+});
 
-function populateMonthFilter() {
-    const months = new Set();
-    transactions.forEach(t => months.add(getMonthKey(t.date)));
-    months.add(getMonthKey(new Date().toISOString().slice(0, 10)));
-    const sorted = [...months].sort().reverse();
-    monthFilter.innerHTML = '<option value="all">All Months</option>';
+// ---------- Months ----------
+function monthKey(d) { return d.slice(0, 7); }
+function monthLabel(ym) {
+    const [y, m] = ym.split('-');
+    return new Date(y, parseInt(m) - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+}
+function populateMonths() {
+    const set = new Set();
+    getAllTransactions().forEach(t => set.add(monthKey(t.date)));
+    set.add(monthKey(new Date().toISOString().slice(0, 10)));
+    const sorted = [...set].sort().reverse();
+    monthFilter.innerHTML = '<option value="all">All Time</option>';
     sorted.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m;
-        opt.textContent = formatMonthLabel(m);
-        monthFilter.appendChild(opt);
+        const o = document.createElement('option');
+        o.value = m;
+        o.textContent = monthLabel(m);
+        monthFilter.appendChild(o);
     });
     monthFilter.value = selectedMonth;
 }
-
-// ---------- Events ----------
-form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    const transaction = {
-        id: Date.now(),
-        description: document.getElementById('description').value.trim(),
-        amount: parseFloat(document.getElementById('amount').value),
-        type: document.getElementById('type').value,
-        category: document.getElementById('category').value,
-        date: document.getElementById('date').value
-    };
-    transactions.push(transaction);
-    saveData();
-    populateMonthFilter();
-    renderAll();
-    form.reset();
-    document.getElementById('date').valueAsDate = new Date();
-});
-
-function deleteTransaction(id) {
-    transactions = transactions.filter(t => t.id !== id);
-    saveData();
-    populateMonthFilter();
-    renderAll();
-}
-
-clearBtn.addEventListener('click', function () {
-    if (confirm('Delete ALL transactions? This cannot be undone.')) {
-        transactions = [];
-        saveData();
-        populateMonthFilter();
-        renderAll();
-    }
-});
-
-monthFilter.addEventListener('change', function () {
+monthFilter.addEventListener('change', () => {
     selectedMonth = monthFilter.value;
     renderAll();
 });
 
-budgetInput.addEventListener('input', function () {
-    monthlyBudget = parseFloat(budgetInput.value) || 0;
-    saveData();
+// ---------- Recurring engine ----------
+function generateOccurrences(rule) {
+    const out = [];
+    const start = new Date(rule.startDate + 'T00:00:00');
+    const today = new Date();
+    const end = rule.endDate ? new Date(rule.endDate + 'T00:00:00') : today;
+    const limit = end > today ? today : end;
+    let d = new Date(start);
+    let guard = 0;
+    while (d <= limit && guard < 5000) {
+        guard++;
+        out.push({
+            id: rule.id + '_' + d.toISOString().slice(0, 10),
+            accountId: rule.accountId,
+            description: rule.description,
+            amount: rule.amount,
+            type: rule.type,
+            category: rule.category,
+            date: d.toISOString().slice(0, 10),
+            recurring: true
+        });
+        if (rule.frequency === 'daily') d.setDate(d.getDate() + 1);
+        else if (rule.frequency === 'weekly') d.setDate(d.getDate() + 7);
+        else if (rule.frequency === 'monthly') d.setMonth(d.getMonth() + 1);
+    }
+    return out;
+}
+
+function getAllTransactions() {
+    let list = [...store.transactions];
+    store.recurring.forEach(r => list.push(...generateOccurrences(r)));
+    return list;
+}
+function getFiltered() {
+    let list = getAllTransactions();
+    if (selectedAccount !== 'all') list = list.filter(t => t.accountId == selectedAccount);
+    if (selectedMonth !== 'all') list = list.filter(t => monthKey(t.date) === selectedMonth);
+    return list;
+}
+
+// ---------- Add transaction ----------
+$('recurring-toggle').addEventListener('change', e => {
+    $('recurring-fields').classList.toggle('hidden', !e.target.checked);
+});
+$('transaction-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const accId = selectedAccount === 'all' ? store.accounts[0].id : parseInt(selectedAccount);
+    const base = {
+        description: $('description').value.trim(),
+        amount: parseFloat($('amount').value),
+        type: $('type').value,
+        category: $('category').value,
+        date: $('date').value,
+        accountId: accId
+    };
+    if ($('recurring-toggle').checked) {
+        store.recurring.push({
+            id: 'r' + Date.now(),
+            ...base,
+            frequency: $('frequency').value,
+            startDate: base.date,
+            endDate: $('recurring-end').value || null
+        });
+    } else {
+        store.transactions.push({ id: Date.now(), ...base });
+    }
+    save();
+    populateMonths();
     renderAll();
+    e.target.reset();
+    $('date').valueAsDate = new Date();
+    $('recurring-fields').classList.add('hidden');
 });
 
-// ---------- CSV Export ----------
-exportBtn.addEventListener('click', function () {
-    if (transactions.length === 0) {
-        alert('No transactions to export.');
+function deleteTransaction(id) {
+    store.transactions = store.transactions.filter(t => t.id !== id);
+    save();
+    populateMonths();
+    renderAll();
+}
+function deleteRecurring(id) {
+    store.recurring = store.recurring.filter(r => r.id !== id);
+    save();
+    populateMonths();
+    renderAll();
+}
+$('clear-all').addEventListener('click', () => {
+    if (confirm('Erase all data? This cannot be undone.')) {
+        store.transactions = [];
+        store.recurring = [];
+        save();
+        populateMonths();
+        renderAll();
+    }
+});
+
+// ---------- Budget ----------
+budgetInput.addEventListener('input', () => {
+    store.budget = parseFloat(budgetInput.value) || 0;
+    save();
+    renderBudget(getFiltered());
+});
+function renderBudget(filtered) {
+    const spent = filtered.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
+    $('budget-status').textContent = `$${spent.toFixed(2)} / $${store.budget.toFixed(2)}`;
+    let pct = store.budget > 0 ? (spent / store.budget) * 100 : 0;
+    const fill = $('budget-fill');
+    fill.style.width = Math.min(pct, 100) + '%';
+    if (store.budget <= 0) {
+        fill.style.background = 'var(--muted)';
+        $('budget-msg').textContent = 'Set a budget to track spending';
+    } else if (pct > 100) {
+        fill.style.background = 'var(--danger)';
+        $('budget-msg').textContent = `Over by $${(spent - store.budget).toFixed(2)}`;
+    } else if (pct >= 80) {
+        fill.style.background = '#f59e0b';
+        $('budget-msg').textContent = `${pct.toFixed(0)}% used`;
+    } else {
+        fill.style.background = 'var(--success)';
+        $('budget-msg').textContent = `${(100 - pct).toFixed(0)}% left`;
+    }
+}
+
+// ---------- Render ----------
+function renderAll() {
+    const filtered = getFiltered();
+    renderTable(filtered);
+    renderSummary(filtered);
+    renderBudget(filtered);
+    renderChart(filtered);
+    renderRecurring();
+}
+
+function renderSummary(filtered) {
+    let inc = 0, out = 0;
+    filtered.forEach(t => t.type === 'income' ? inc += t.amount : out += t.amount);
+    const net = inc - out;
+    $('balance').textContent = `${net < 0 ? '-' : ''}$${Math.abs(net).toFixed(2)}`;
+    $('total-income').textContent = `$${inc.toFixed(2)}`;
+    $('total-expense').textContent = `$${out.toFixed(2)}`;
+}
+
+function renderTable(filtered) {
+    const tb = $('transaction-list');
+    tb.innerHTML = '';
+    [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(t => {
+        const acc = store.accounts.find(a => a.id == t.accountId);
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${t.date}</td>
+            <td>${escapeHtml(t.description)}</td>
+            <td>${t.category}</td>
+            <td><span class="tag ${t.type}">${t.type}</span></td>
+            <td style="color:${t.type === 'income' ? 'var(--success)' : 'var(--danger)'};font-weight:600">
+                ${t.type === 'income' ? '+' : '-'}$${t.amount.toFixed(2)}
+            </td>
+            <td><button class="del-row" onclick="deleteTransaction(${t.id})">✕</button></td>`;
+        tb.appendChild(tr);
+    });
+}
+
+function renderRecurring() {
+    const wrap = $('recurring-list');
+    wrap.innerHTML = '';
+    if (store.recurring.length === 0) {
+        wrap.innerHTML = '<small style="color:var(--muted)">No recurring rules yet.</small>';
         return;
     }
-    const headers = ['id', 'date', 'description', 'category', 'type', 'amount'];
-    const rows = transactions.map(t => [
-        t.id, t.date, `"${t.description.replace(/"/g, '""')}"`, t.category, t.type, t.amount
-    ]);
-    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
+    store.recurring.forEach(r => {
+        const acc = store.accounts.find(a => a.id == r.accountId);
+        const div = document.createElement('div');
+        div.className = 'rec-item';
+        div.innerHTML = `
+            <div>
+                <strong>${escapeHtml(r.description)}</strong>
+                <span class="meta"> · ${r.frequency} · ${r.type} · $${r.amount.toFixed(2)}</span>
+            </div>
+            <button class="rec-del" onclick="deleteRecurring('${r.id}')">Remove</button>`;
+        wrap.appendChild(div);
+    });
+}
+
+function renderChart(filtered) {
+    const canvas = $('expense-chart');
+    const ctx = canvas.getContext('2d');
+    if (typeof Chart === 'undefined') {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#999'; ctx.textAlign = 'center';
+        ctx.fillText('Chart needs internet', canvas.width / 2, canvas.height / 2);
+        return;
+    }
+    const cats = {};
+    filtered.forEach(t => {
+        if (t.type === 'expense') cats[t.category] = (cats[t.category] || 0) + t.amount;
+    });
+    const labels = Object.keys(cats), data = Object.values(cats);
+    if (expenseChart) expenseChart.destroy();
+    if (!labels.length) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#999'; ctx.textAlign = 'center';
+        ctx.fillText('No spending yet', canvas.width / 2, canvas.height / 2);
+        return;
+    }
+    expenseChart = new Chart(ctx, {
+        type: 'doughnut',
+        data: { labels, datasets: [{ data, backgroundColor: ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'] }] },
+        options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+    });
+}
+
+// ---------- CSV ----------
+$('export-csv').addEventListener('click', () => {
+    if (!store.transactions.length) return alert('Nothing to export.');
+    const head = 'id,date,description,category,type,amount,accountId';
+    const rows = store.transactions.map(t =>
+        [t.id, t.date, `"${t.description.replace(/"/g, '""')}"`, t.category, t.type, t.amount, t.accountId].join(','));
+    const blob = new Blob([head + '\n' + rows.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
-    a.href = url;
-    a.download = 'finance-data.csv';
+    a.href = URL.createObjectURL(blob);
+    a.download = 'ledger.csv';
     a.click();
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(a.href);
 });
-
-// ---------- CSV Import ----------
-importBtn.addEventListener('click', () => importFile.click());
-importFile.addEventListener('change', function (e) {
-    const file = e.target.files[0];
-    if (!file) return;
+$('import-csv-btn').addEventListener('click', () => $('import-csv').click());
+$('import-csv').addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (!f) return;
     const reader = new FileReader();
-    reader.onload = function (ev) {
+    reader.onload = ev => {
         const lines = ev.target.result.split('\n').filter(l => l.trim());
-        if (lines.length < 2) { alert('CSV empty or invalid.'); return; }
-        const newOnes = [];
+        let n = 0;
         for (let i = 1; i < lines.length; i++) {
-            const cols = parseCsvLine(lines[i]);
-            if (cols.length < 6) continue;
-            const [id, date, description, category, type, amount] = cols;
-            newOnes.push({
-                id: parseInt(id) || Date.now() + Math.floor(Math.random() * 1000),
-                date,
-                description: description.replace(/""/g, '"'),
-                category,
-                type,
-                amount: parseFloat(amount)
+            const c = parseLine(lines[i]);
+            if (c.length < 6) continue;
+            store.transactions.push({
+                id: parseInt(c[0]) || Date.now() + n,
+                date: c[1], description: c[2].replace(/""/g, '"'),
+                category: c[3], type: c[4], amount: parseFloat(c[5]),
+                accountId: parseInt(c[6]) || store.accounts[0].id
             });
+            n++;
         }
-        transactions = transactions.concat(newOnes);
-        saveData();
-        populateMonthFilter();
-        renderAll();
-        alert(`Imported ${newOnes.length} transactions.`);
+        save(); populateMonths(); renderAll();
+        alert(`Imported ${n} rows.`);
     };
-    reader.readAsText(file);
-    importFile.value = '';
+    reader.readAsText(f);
+    e.target.value = '';
 });
-
-function parseCsvLine(line) {
-    const out = [];
-    let cur = '', inQuotes = false;
+function parseLine(line) {
+    const out = []; let cur = '', q = false;
     for (let i = 0; i < line.length; i++) {
         const ch = line[i];
-        if (inQuotes) {
-            if (ch === '"') {
-                if (line[i + 1] === '"') { cur += '"'; i++; }
-                else inQuotes = false;
-            } else cur += ch;
+        if (q) {
+            if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+            else cur += ch;
         } else {
-            if (ch === '"') inQuotes = true;
+            if (ch === '"') q = true;
             else if (ch === ',') { out.push(cur); cur = ''; }
             else cur += ch;
         }
@@ -185,133 +366,9 @@ function parseCsvLine(line) {
     return out;
 }
 
-// ---------- Render ----------
-function renderAll() {
-    const filtered = getFilteredTransactions();
-    renderTransactions(filtered);
-    updateSummary(filtered);
-    updateBudget(filtered);
-    renderChart(filtered);
-    updateLabels();
-}
-
-function updateLabels() {
-    const period = selectedMonth === 'all' ? 'All Time' : formatMonthLabel(selectedMonth);
-    netLabel.textContent = `Net (${period})`;
-    incomeLabel.textContent = `Income (${period})`;
-    expenseLabel.textContent = `Expenses (${period})`;
-}
-
-function renderTransactions(filtered) {
-    transactionList.innerHTML = '';
-    const sorted = [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date));
-    sorted.forEach(t => {
-        const row = document.createElement('tr');
-        const sign = t.type === 'income' ? '+' : '-';
-        const color = t.type === 'income' ? '#27ae60' : '#e74c3c';
-        row.innerHTML = `
-            <td>${t.date}</td>
-            <td>${escapeHtml(t.description)}</td>
-            <td>${t.category}</td>
-            <td><span class="tag ${t.type}">${t.type}</span></td>
-            <td style="color: ${color}; font-weight: bold;">${sign}$${t.amount.toFixed(2)}</td>
-            <td><button class="delete-btn" onclick="deleteTransaction(${t.id})">Delete</button></td>
-        `;
-        transactionList.appendChild(row);
-    });
-}
-
-function updateSummary(filtered) {
-    let income = 0, expense = 0;
-    filtered.forEach(t => {
-        if (t.type === 'income') income += t.amount;
-        else expense += t.amount;
-    });
-    const net = income - expense;
-    balanceEl.textContent = `${net < 0 ? '-' : ''}$${Math.abs(net).toFixed(2)}`;
-    incomeEl.textContent = `$${income.toFixed(2)}`;
-    expenseEl.textContent = `$${expense.toFixed(2)}`;
-}
-
-function updateBudget(filtered) {
-    const expense = filtered
-        .filter(t => t.type === 'expense')
-        .reduce((s, t) => s + t.amount, 0);
-
-    budgetStatus.textContent = `$${expense.toFixed(2)} / $${monthlyBudget.toFixed(2)}`;
-
-    let pct = 0;
-    if (monthlyBudget > 0) pct = (expense / monthlyBudget) * 100;
-
-    budgetFill.style.width = Math.min(pct, 100) + '%';
-
-    if (monthlyBudget <= 0) {
-        budgetFill.style.background = '#95a5a6';
-        budgetMsg.textContent = 'Set a budget to track spending';
-    } else if (pct > 100) {
-        budgetFill.style.background = '#e74c3c';
-        budgetMsg.textContent = `Over budget by $${(expense - monthlyBudget).toFixed(2)}`;
-    } else if (pct >= 80) {
-        budgetFill.style.background = '#f39c12';
-        budgetMsg.textContent = `Careful! ${pct.toFixed(0)}% used`;
-    } else {
-        budgetFill.style.background = '#27ae60';
-        budgetMsg.textContent = `${(100 - pct).toFixed(0)}% remaining`;
-    }
-}
-
-function renderChart(filtered) {
-    const canvas = document.getElementById('expense-chart');
-    const ctx = canvas.getContext('2d');
-
-    if (typeof Chart === 'undefined') {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.font = '14px Arial';
-        ctx.fillStyle = '#999';
-        ctx.textAlign = 'center';
-        ctx.fillText('Chart needs internet to load', canvas.width / 2, canvas.height / 2);
-        return;
-    }
-
-    const categories = {};
-    filtered.forEach(t => {
-        if (t.type === 'expense') {
-            categories[t.category] = (categories[t.category] || 0) + t.amount;
-        }
-    });
-
-    const labels = Object.keys(categories);
-    const data = Object.values(categories);
-
-    if (expenseChart) expenseChart.destroy();
-
-    if (labels.length === 0) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.font = '16px Arial';
-        ctx.fillStyle = '#999';
-        ctx.textAlign = 'center';
-        ctx.fillText('No expense data yet', canvas.width / 2, canvas.height / 2);
-        return;
-    }
-
-    expenseChart = new Chart(ctx, {
-        type: 'doughnut',
-        data: {
-            labels,
-            datasets: [{
-                data,
-                backgroundColor: ['#e74c3c', '#3498db', '#f39c12', '#9b59b6', '#1abc9c', '#95a5a6']
-            }]
-        },
-        options: {
-            responsive: true,
-            plugins: { legend: { position: 'bottom' } }
-        }
-    });
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+// ---------- Utils ----------
+function escapeHtml(t) {
+    const d = document.createElement('div');
+    d.textContent = t;
+    return d.innerHTML;
 }
